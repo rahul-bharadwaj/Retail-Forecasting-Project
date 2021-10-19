@@ -1,0 +1,305 @@
+---
+title: "Retail-Forecasting-Project"
+author: "Rahul Bharadwaj Mysore Venkatesh - 31322239"
+date: "30/05/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: inline
+---
+
+### Clothing, Footwear, Personal Accessories Retail for the region Tasmania:
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(fpp3)
+library(tidyverse)
+```
+
+```{r Data}
+set.seed(31322239)
+myseries <- aus_retail %>%
+  filter(
+    `Series ID` == sample(aus_retail$`Series ID`,1),
+    Month < yearmonth("2018 Jan")
+  ) %>%
+  mutate(Month = yearmonth(Month)) %>%
+  as_tsibble(key = c(State, Industry, `Series ID`), index = Month)
+```
+
+> **1. A discussion of the statistical features of the original data.**
+
+* The `autopplot()` function helps us get an overview of the long term trend in the Turnover throughout the time series from 1982 to 2017. We can see a general increasing trend throughout the time series for Clothing, Footwear and personal accessory retailing.
+
+```{r AutoPlot, out.width='100%'}
+autoplot(myseries) +
+  labs(title = "Turnover Graph of Original Data")
+```
+
+* Particularly after 2000, there has been a steeper increase in the trend which shows a higher rate of retail purchase from 2000-2017. We can also observe seasonality in this graph which shows that shopping is not consistent throughout the year. To explore seasonality in detail, we plot using `gg_season()` function.
+
+```{r SeasonPlot, out.width='100%'}
+gg_season(myseries) +
+  labs(title = "Monthly Turnover Graph over each year")
+```
+
+* The above figure shows a seasonality of retail shopping throughout the different months of the year for all the years. We can observe a general increase in shopping towards the end of the year for Christmas. The seasonal graph shows a somewhat consistent shopping throughout the year other than towards the end.
+
+* We can observe the increasing trend in this graph as well. There are some peaks and plunges during June for the different years observed. This can be further investigated for more information.
+
+```{r SubseriesPlot, out.width='100%', out.height=500}
+gg_subseries(myseries) +
+  labs(title = "Monthly Turnover for all years")
+```
+
+* The above plot displays the change in retail shopping behavior for each month throughout the time series. We can observe a general increasing trend in shopping behavior throughout the time series.
+
+* Particularly the month of December as observed previously has a steep increase the year 2000. This again hints at increased shopping after the year 2000. We can observe a small decrease in the December subplot after 2010 but this still is way higher compared to other months of the year.
+
+* We can conclude that the average turnover for November and December are highest every year for reatil shopping and that there has been a general upward trend in shopping after the year 2000 from these plots.
+
+#### **2. Explanation of transformations and differencing used.**
+
+> Producing a plot of an STL decomposition of the transformed data and Explaining what is learned.
+
+* Finding an appropriate Box-Cox transformation for the data.
+
+* Lambda value is as follows and the following plot shows a Box-Cox transformed plot for Turnover.
+
+```{r STL, out.width='100%'}
+myseries %>% features(Turnover, features = guerrero) %>% pull(lambda_guerrero) -> lambda
+
+myseries_boxcox <- myseries %>% mutate(Turnover = (box_cox(Turnover, lambda))) 
+
+myseries_boxcox %>% 
+  model(STL(Turnover)) %>% 
+  components() %>% 
+  autoplot() +
+    labs(title = "STL decomposition: Retail for the region Tasmania")
+```
+
+The above plot has four components. They are:
+
+1. Turnover - This plot shows the Box-Cox transformed Turnover which is the same as the plot before. This plot is further split in to there components namely, trend, seasonality, and remainder.
+
+2. Trend - This graph shows the long term trend of the data. It gives an overview of whether the data is increasing or decreasing across all years. This trend is evidently observed in the top plot.
+
+3. Seasonality - This graph shows the seasonal ups and downs that can be observed within the short term duration within an year. We can observe how this seasonality is changing over the years. The seasonal patterns has remained almost similar but starts to change a little from Jan 2000 onward. We have a different seasonal pattern in the latest observation compared to the oldest data.
+
+4. Remainder - This graph shows the remaining parts of the data that may or may not show any particular patterns or cycles. This component doesn't show show any particular patterns and least affects the top plot.
+
+```{r Transform, out.width='100%'}
+myseries_boxcox %>% 
+  autoplot() +
+  geom_smooth(method = 'lm') +
+  labs(y = "Box-Cox transformed Turnover", title = "Turnover graph after Box-Cox Transformation")
+```
+
+> Unit Root Test to determine stationarity.
+
+```{r UnitRootTest}
+myseries_boxcox %>%
+  features(Turnover, unitroot_kpss)
+```
+
+* The value is large for the statistic and p-value is 0.01 which shows it is not stationary.
+
+**We determine the p-value for the differenced data now.**
+
+```{r Differencing}
+myseries_boxcox %>%
+  mutate(diff_t = difference(Turnover)) %>%
+  features(diff_t, unitroot_kpss)
+```
+
+* The differenced data has p-value 0.1 and is thus said to be stationary.
+
+```{r SeasonalDiff}
+myseries_total <- myseries_boxcox %>%
+  summarise(Turnover = sum(Turnover))
+myseries_total %>%
+  mutate(log_turnover = log(Turnover)) %>%
+  features(log_turnover, unitroot_nsdiffs)
+```
+
+This shows that 1 seasonal differencing is required.
+
+> Differencing
+
+```{r BeforeDiff}
+myseries_boxcox %>% gg_tsdisplay(Turnover, plot_type = "partial") +
+  labs(title = "Dataset before Differencing")
+```
+
+**After applying the differencing:**
+
+```{r AfterDiff}
+myseries_boxcox %>% gg_tsdisplay(difference((Turnover), lag = 12), plot_type = "partial") +
+  labs(title = "Dataset after Differencing")
+```
+
+> **3. A description of the methodology used to create a short-list of appropriate ARIMA models and ETS models.**
+
+**Methodology**: The process of selecting a shortlist of ARIMA model involves careful observation of the previous graph with acf and pacf vaues. We need to select one of the two from our observation as to which one is simpler. In this case, the pacf is much simpler compared to acf as there are more significant values in acf. We go ahead and make observations in pacf and use them in our modelling.
+
+**Shortlist of ARIMA models:**
+
+Template: f(y) ~ ARIMA(p,d,q)(P,D,Q)[m]
+
+boxcox(y) ~ ARIMA (p, d=0, q)(P, D=1, Q)[m]
+
+boxcox(y) ~ ARIMA (p = 1, d = 0, q = 0)(P = 2, D = 1, Q = 0)[12] + c
+
+boxcox(y) ~ ARIMA (p = 7, d = 0, q = 0)(P = 2, D = 1, Q = 0)[12] + c
+
+* From the pacf graph, we observe that at lag 7, there is significant values. Our choice is less than the lag value of 12 itself and this is ideal. Let's go ahead and model our two shortlisted Arima Models and compare it with an equivalent auto ARIMA Model. We use the automatic ETS modeling to choose an ETS model for our data.
+
+```{r Modeling}
+fit <- myseries_boxcox %>%
+  model(
+    arima100210c = ARIMA((Turnover) ~ 1 + pdq(1, 0, 0) + PDQ(2, 1, 0)),
+    arima700210c = ARIMA((Turnover) ~ 1 + pdq(7, 0, 0) + PDQ(2, 1, 0)),
+    autoarima = ARIMA(Turnover ~ pdq(d=0) + PDQ(D=1), trace = TRUE),
+    autoets = ETS(Turnover)
+  )
+
+glance(fit)
+```
+**The lower the AIC value, the better the model. In our case, the auto ARIMA model ahs the lowest AIC value and thus, we select the automatically generated ARIMA model.**
+
+**Creating Test Data with last 24 months:**
+
+```{r TestCompare}
+set.seed(31322239)
+testdata <- aus_retail %>%
+  filter(
+    `Series ID` == sample(aus_retail$`Series ID`,1),
+    Month >= yearmonth("2016 Jan")
+  ) %>%
+  mutate(Month = yearmonth(Month)) %>%
+  as_tsibble(key = c(State, Industry, `Series ID`), index = Month)
+
+test <- testdata %>% mutate(Turnover = (box_cox(Turnover, lambda))) 
+
+fittest <- test %>%
+  model(
+    arima = ARIMA(Turnover ~ pdq(d=0) + PDQ(D=1), trace = TRUE),
+    ets = ETS(Turnover)
+  )
+
+glance(fittest)
+```
+
+> **4. Choose one ARIMA model and one ETS model based on this analysis and show parameter estimates, residual diagnostics, forecasts and prediction intervals for both models. Diagnostic checking for both models should include ACF graphs as well as the Ljung-Box test.**
+
+Chosen ARIMA & ETS Models: Automatically generated ARIMA & ETS Models.
+
+**ARIMA Model: parameter estimates, residual diagnostics, and forecasts**
+
+```{r ARIMA}
+fit %>%
+  select(autoarima) %>% tidy()
+
+fit %>%
+  select(autoarima) %>% gg_tsresiduals() +
+  labs(title = "Residuals, ACF, and Count for ARIMA Model")
+
+fit %>% 
+  select(autoarima) %>% 
+  forecast(h = "2 years") %>% rmarkdown::paged_table()
+```
+
+**ETS Model: parameter estimates, residual diagnostics, and forecasts**
+
+```{r ETS}
+fit %>%
+  select(autoets) %>% tidy()
+
+fit %>%
+  select(autoets) %>% gg_tsresiduals() +
+  labs(title = "Residuals, ACF, and Count for ETS Model")
+
+fit %>% 
+  select(autoets) %>% 
+  forecast(h = "2 years") %>% rmarkdown::paged_table()
+```
+
+**Ljung-Box Test:**
+
+```{r LjungBox}
+augment(fit) %>% features(.innov, ljung_box, lag=12, dof=1)
+```
+
+> **5. Comparison of the results from each of your preferred models. Which method do you think gives the better forecasts? Explain with reference to the test-set.**
+
+**With reference to test data:**
+
+```{r Compare}
+fittest %>% 
+  select(arima, ets) %>% 
+  forecast(h = "2 years") %>% autoplot(myseries_total) + 
+  labs(title = "Auto ARIMA & ETS Forecasts for the test data in next 2 years")
+```
+
+With reference to the test data considered 24 months prior to last observed data, the ETS model seems more accurate with narrower prediction intervals. The overall observations for both models are very similar and it it is hard to choose the best model.
+
+> **6. Apply your two chosen models to the full data set and produce out-of-sample point forecasts and 80% prediction intervals for each model for two years past the end of the data provided.**
+
+The following table shows a point estimate for each model over 2 years with 80% predication intervals.
+
+```{r PointForecast}
+fitdata <- fit %>% 
+  select(autoarima, autoets) %>% 
+  forecast(h = 24)
+
+hilo(fitdata, level = 80)%>%  unpack_hilo(cols = "80%") %>% rmarkdown::paged_table()
+```
+
+> **7. Obtain up-to-date data from the ABS website (Cat. 8501.0, Table 11), and compare your forecasts with the actual numbers.**
+
+```{r}
+set.seed(31322239)
+fc <- fit %>%
+  forecast(h = "2 years")
+
+update <- aus_retail %>%
+  filter(
+    `Series ID` == sample(aus_retail$`Series ID`,1),
+    Month > yearmonth("2018 Jan")
+  ) %>%
+  mutate(Month = yearmonth(Month)) %>%
+  as_tsibble(key = c(State, Industry, `Series ID`), index = Month) %>%
+  select(Month, Turnover) %>%
+  as_tsibble(index=Month) %>%
+  filter(Month >= min(fc$Month))
+
+updatedata <- update %>% mutate(Turnover = (box_cox(Turnover, lambda))) 
+
+fc %>% accuracy(updatedata)
+
+fc %>%
+  autoplot(myseries_boxcox %>% filter(year(Month) > 2018), alpha = .45) +
+  geom_line(data=updatedata, aes(x=Month, y=Turnover), col='red')
+```
+
+* We have selected the remaining one year's worth of data from Jan 2018 to Dec 2018 to check how the forecast fairs against the actual value.
+
+* The forecast values for all the ARIMA and ETS models are very close to the actual value in the data set. We can thus conclude that the modeling is pretty accurate.
+
+> **8. A discussion of benefits and limitations of the models for your data.**
+
+**Benefits:**
+
+* Well fitted models with great accuracy.
+
+* Models have considered the patterns of the historical data in an efficient manner which is reflected in the forecast.
+
+**Limitations:**
+
+* Model hasn't considered the unlikely changes like a pandemic which hit in 2020.
+
+* The retail turnover would have an impact in 2020 which is unlikley to be predicted by our model.
+
+> Conclusion:
+
+We have created an accurate forecasting model keeping in mind that the patterns in the future are the saem as the historical data. Under normal circumstances apart from a pandemic situation, our model fits well and indicates the retail turnover in Tasmania in a highly accurate manner. 
+
